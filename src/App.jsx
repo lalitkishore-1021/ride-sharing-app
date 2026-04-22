@@ -431,7 +431,7 @@ const RideSharingApp = () => {
               </div>
               <div>
                 <h1 className="text-xl font-bold text-black">RideShare</h1>
-                <p className="text-xs text-gray-500">by B.LALIT KISHORE</p>
+                <p className="text-xs text-gray-500">By Aaradhya Archie</p>
               </div>
             </div>
             
