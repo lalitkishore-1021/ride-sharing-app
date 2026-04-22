@@ -1,5 +1,54 @@
-import React, { useState, useEffect } from 'react';
-import { MapPin, Navigation, Clock, DollarSign, Star, User, TrendingUp, Activity, Search, Car, Check, X, Menu, Wallet, Settings, LogOut } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import { MapContainer, TileLayer, Marker, Popup, Polyline, useMap } from 'react-leaflet';
+import { MapPin, Navigation, Clock, DollarSign, Star, User, TrendingUp, Activity, Search, Car, Check, X, Menu, Wallet, Settings, LogOut, Locate } from 'lucide-react';
+import L from 'leaflet';
+import 'leaflet/dist/leaflet.css';
+
+// Fix Leaflet default marker icons
+delete L.Icon.Default.prototype._getIconUrl;
+L.Icon.Default.mergeOptions({
+  iconRetinaUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-icon-2x.png',
+  iconUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-icon.png',
+  shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-shadow.png',
+});
+
+// Custom icons
+const pickupIcon = new L.Icon({
+  iconUrl: 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMzIiIGhlaWdodD0iNDIiIHZpZXdCb3g9IjAgMCAzMiA0MiIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cGF0aCBkPSJNMTYgMEMxMC40NzcgMCA2IDQuNDc3IDYgMTBDNiAxNy41IDE2IDQyIDE2IDQyQzE2IDQyIDI2IDE3LjUgMjYgMTBDMjYgNC40NzcgMjEuNTIzIDAgMTYgMFoiIGZpbGw9IiNDRERDMzkiLz48Y2lyY2xlIGN4PSIxNiIgY3k9IjEwIiByPSI0IiBmaWxsPSIjMDAwIi8+PC9zdmc+',
+  iconSize: [32, 42],
+  iconAnchor: [16, 42],
+  popupAnchor: [0, -42]
+});
+
+const dropoffIcon = new L.Icon({
+  iconUrl: 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMzIiIGhlaWdodD0iNDIiIHZpZXdCb3g9IjAgMCAzMiA0MiIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cGF0aCBkPSJNMTYgMEMxMC40NzcgMCA2IDQuNDc3IDYgMTBDNiAxNy41IDE2IDQyIDE2IDQyQzE2IDQyIDI2IDE3LjUgMjYgMTBDMjYgNC40NzcgMjEuNTIzIDAgMTYgMFoiIGZpbGw9IiMwMDAiLz48Y2lyY2xlIGN4PSIxNiIgY3k9IjEwIiByPSI0IiBmaWxsPSIjZmZmIi8+PC9zdmc+',
+  iconSize: [32, 42],
+  iconAnchor: [16, 42],
+  popupAnchor: [0, -42]
+});
+
+// Map recenter component
+const RecenterMap = ({ center }) => {
+  const map = useMap();
+  useEffect(() => {
+    if (center) {
+      map.setView(center, 13);
+    }
+  }, [center, map]);
+  return null;
+};
+
+// Haversine distance calculator
+const calculateDistance = (lat1, lon1, lat2, lon2) => {
+  const R = 6371; // Earth's radius in km
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLon = (lon2 - lon1) * Math.PI / 180;
+  const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+    Math.sin(dLon/2) * Math.sin(dLon/2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+  return R * c;
+};
 
 const RideSharingApp = () => {
   // Centralized State
@@ -19,16 +68,151 @@ const RideSharingApp = () => {
   const [dropoff, setDropoff] = useState('');
   const [distance, setDistance] = useState('');
   const [fareEstimate, setFareEstimate] = useState(null);
-  const [rideStatus, setRideStatus] = useState('idle'); // idle, searching, accepted, inProgress, completed
+  const [rideStatus, setRideStatus] = useState('idle');
   const [assignedDriver, setAssignedDriver] = useState(null);
   const [userRating, setUserRating] = useState(0);
+
+  // Map State
+  const [mapCenter, setMapCenter] = useState([13.0827, 80.2707]); // Chennai
+  const [pickupCoords, setPickupCoords] = useState(null);
+  const [dropoffCoords, setDropoffCoords] = useState(null);
+  const [userLocation, setUserLocation] = useState(null);
+  
+  // Search State
+  const [pickupSuggestions, setPickupSuggestions] = useState([]);
+  const [dropoffSuggestions, setDropoffSuggestions] = useState([]);
+  const [showPickupSuggestions, setShowPickupSuggestions] = useState(false);
+  const [showDropoffSuggestions, setShowDropoffSuggestions] = useState(false);
 
   // Driver State
   const [selectedDriverId, setSelectedDriverId] = useState(1);
 
-  // Map State
-  const [pickupCoords, setPickupCoords] = useState([13.0418, 80.2341]);
-  const [dropoffCoords, setDropoffCoords] = useState([13.0827, 80.2707]);
+  // Car Animation State
+  const [carAnimationProgress, setCarAnimationProgress] = useState(0);
+
+  // FIXED: State Sync - Watch rides array and update rideStatus
+  useEffect(() => {
+    if (currentRide) {
+      const updatedRide = rides.find(r => r.id === currentRide.id);
+      if (updatedRide) {
+        // Sync status changes from global rides array to local rideStatus
+        if (updatedRide.status === 'accepted' && rideStatus !== 'accepted') {
+          setRideStatus('accepted');
+          setAssignedDriver(drivers.find(d => d.id === updatedRide.driverId));
+        } else if (updatedRide.status === 'inProgress' && rideStatus !== 'inProgress') {
+          setRideStatus('inProgress');
+        } else if (updatedRide.status === 'completed' && rideStatus !== 'completed') {
+          setRideStatus('completed');
+        }
+      }
+    }
+  }, [rides, currentRide, rideStatus, drivers]);
+
+  // Car animation when ride is in progress
+  useEffect(() => {
+    if (rideStatus === 'inProgress') {
+      const interval = setInterval(() => {
+        setCarAnimationProgress(prev => {
+          if (prev >= 100) return 100;
+          return prev + 0.5;
+        });
+      }, 50);
+      return () => clearInterval(interval);
+    } else {
+      setCarAnimationProgress(0);
+    }
+  }, [rideStatus]);
+
+  // Get user's current location
+  const getCurrentLocation = () => {
+    if (navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        (position) => {
+          const { latitude, longitude } = position.coords;
+          setUserLocation([latitude, longitude]);
+          setPickupCoords([latitude, longitude]);
+          setMapCenter([latitude, longitude]);
+          
+          // Reverse geocode to get address
+          fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${latitude}&lon=${longitude}`)
+            .then(res => res.json())
+            .then(data => {
+              setPickup(data.display_name);
+            })
+            .catch(err => console.error('Reverse geocoding error:', err));
+        },
+        (error) => {
+          alert('Unable to get your location. Please enable location services.');
+          console.error('Geolocation error:', error);
+        }
+      );
+    } else {
+      alert('Geolocation is not supported by your browser');
+    }
+  };
+
+  // Search for address using Nominatim
+  const searchAddress = async (query, isPickup) => {
+    if (query.length < 3) {
+      if (isPickup) setPickupSuggestions([]);
+      else setDropoffSuggestions([]);
+      return;
+    }
+
+    try {
+      const response = await fetch(
+        `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&limit=5`
+      );
+      const data = await response.json();
+      
+      if (isPickup) {
+        setPickupSuggestions(data);
+        setShowPickupSuggestions(true);
+      } else {
+        setDropoffSuggestions(data);
+        setShowDropoffSuggestions(true);
+      }
+    } catch (error) {
+      console.error('Address search error:', error);
+    }
+  };
+
+  // Handle pickup address selection
+  const selectPickupAddress = (suggestion) => {
+    setPickup(suggestion.display_name);
+    setPickupCoords([parseFloat(suggestion.lat), parseFloat(suggestion.lon)]);
+    setMapCenter([parseFloat(suggestion.lat), parseFloat(suggestion.lon)]);
+    setShowPickupSuggestions(false);
+    
+    // Calculate distance if both points are set
+    if (dropoffCoords) {
+      const dist = calculateDistance(
+        parseFloat(suggestion.lat),
+        parseFloat(suggestion.lon),
+        dropoffCoords[0],
+        dropoffCoords[1]
+      );
+      setDistance(dist.toFixed(2));
+    }
+  };
+
+  // Handle dropoff address selection
+  const selectDropoffAddress = (suggestion) => {
+    setDropoff(suggestion.display_name);
+    setDropoffCoords([parseFloat(suggestion.lat), parseFloat(suggestion.lon)]);
+    setShowDropoffSuggestions(false);
+    
+    // Calculate distance if both points are set
+    if (pickupCoords) {
+      const dist = calculateDistance(
+        pickupCoords[0],
+        pickupCoords[1],
+        parseFloat(suggestion.lat),
+        parseFloat(suggestion.lon)
+      );
+      setDistance(dist.toFixed(2));
+    }
+  };
 
   // Calculate Fare
   const calculateFare = () => {
@@ -58,9 +242,13 @@ const RideSharingApp = () => {
       alert('Please calculate fare first');
       return;
     }
+    if (!pickupCoords || !dropoffCoords) {
+      alert('Please select both pickup and dropoff locations on the map');
+      return;
+    }
+    
     setRideStatus('searching');
     
-    // Simulate finding driver
     setTimeout(() => {
       const availableDriver = drivers.find(d => d.isOnline && !d.currentRide);
       if (availableDriver) {
@@ -74,6 +262,8 @@ const RideSharingApp = () => {
           driverPlate: availableDriver.plate,
           pickup,
           dropoff,
+          pickupCoords,
+          dropoffCoords,
           distance: fareEstimate.distance,
           fare: parseFloat(fareEstimate.total),
           driverEarnings: parseFloat(fareEstimate.driverCut),
@@ -90,7 +280,7 @@ const RideSharingApp = () => {
     }, 2000);
   };
 
-  // Driver accepts ride
+  // FIXED: Removed currentRole checks - state syncs via useEffect
   const acceptRide = (rideId) => {
     const ride = rides.find(r => r.id === rideId);
     if (ride) {
@@ -100,25 +290,15 @@ const RideSharingApp = () => {
       setDrivers(prev => prev.map(d => 
         d.id === selectedDriverId ? { ...d, currentRide: rideId } : d
       ));
-      
-      if (currentRole === 'rider' && currentRide?.id === rideId) {
-        setRideStatus('accepted');
-        setAssignedDriver(drivers.find(d => d.id === selectedDriverId));
-      }
     }
   };
 
-  // Start ride
   const startRide = (rideId) => {
     setRides(prev => prev.map(r => 
       r.id === rideId ? { ...r, status: 'inProgress' } : r
     ));
-    if (currentRole === 'rider' && currentRide?.id === rideId) {
-      setRideStatus('inProgress');
-    }
   };
 
-  // Complete ride
   const completeRide = (rideId) => {
     const ride = rides.find(r => r.id === rideId);
     if (ride) {
@@ -126,7 +306,6 @@ const RideSharingApp = () => {
         r.id === rideId ? { ...r, status: 'completed' } : r
       ));
       
-      // Update driver earnings
       setDrivers(prev => prev.map(d => 
         d.id === ride.driverId ? { 
           ...d, 
@@ -134,10 +313,6 @@ const RideSharingApp = () => {
           currentRide: null 
         } : d
       ));
-      
-      if (currentRole === 'rider' && currentRide?.id === rideId) {
-        setRideStatus('completed');
-      }
     }
   };
 
@@ -148,7 +323,6 @@ const RideSharingApp = () => {
         r.id === currentRide.id ? { ...r, rating: userRating } : r
       ));
       
-      // Update driver rating
       const driver = drivers.find(d => d.id === currentRide.driverId);
       if (driver) {
         const completedRides = rides.filter(r => r.driverId === driver.id && r.rating).length + 1;
@@ -158,18 +332,18 @@ const RideSharingApp = () => {
         ));
       }
       
-      // Reset for new ride
       setRideStatus('idle');
       setCurrentRide(null);
       setFareEstimate(null);
       setPickup('');
       setDropoff('');
       setDistance('');
+      setPickupCoords(null);
+      setDropoffCoords(null);
       setUserRating(0);
     }
   };
 
-  // Toggle driver online status
   const toggleDriverStatus = () => {
     setDrivers(prev => prev.map(d => 
       d.id === selectedDriverId ? { ...d, isOnline: !d.isOnline } : d
@@ -182,6 +356,17 @@ const RideSharingApp = () => {
   const completedRides = rides.filter(r => r.status === 'completed');
   const totalRevenue = completedRides.reduce((sum, r) => sum + r.fare, 0);
   const activeDrivers = drivers.filter(d => d.isOnline).length;
+
+  // Calculate car position for animation
+  const getCarPosition = () => {
+    if (!pickupCoords || !dropoffCoords) return null;
+    const progress = carAnimationProgress / 100;
+    const lat = pickupCoords[0] + (dropoffCoords[0] - pickupCoords[0]) * progress;
+    const lng = pickupCoords[1] + (dropoffCoords[1] - pickupCoords[1]) * progress;
+    return [lat, lng];
+  };
+
+  const carPosition = getCarPosition();
 
   return (
     <div className="min-h-screen bg-gray-50 font-sans">
@@ -219,18 +404,20 @@ const RideSharingApp = () => {
             opacity: 0.5;
           }
         }
-        
-        .map-container {
-          background: linear-gradient(135deg, #f5f5f5 0%, #e5e5e5 100%);
-          position: relative;
-          overflow: hidden;
+
+        .leaflet-container {
+          height: 100%;
+          border-radius: 1.5rem;
+          z-index: 0;
         }
-        
-        .map-grid {
-          background-image: 
-            linear-gradient(rgba(0,0,0,0.05) 1px, transparent 1px),
-            linear-gradient(90deg, rgba(0,0,0,0.05) 1px, transparent 1px);
-          background-size: 40px 40px;
+
+        .suggestion-item {
+          cursor: pointer;
+          transition: background-color 0.2s;
+        }
+
+        .suggestion-item:hover {
+          background-color: #f5f5f5;
         }
       `}</style>
 
@@ -244,7 +431,7 @@ const RideSharingApp = () => {
               </div>
               <div>
                 <h1 className="text-xl font-bold text-black">RideShare</h1>
-                <p className="text-xs text-gray-500">By Aaradhya archie</p>
+                <p className="text-xs text-gray-500">by B.LALIT KISHORE</p>
               </div>
             </div>
             
@@ -289,62 +476,79 @@ const RideSharingApp = () => {
         {/* RIDER VIEW */}
         {currentRole === 'rider' && (
           <div className="animate-slide-up">
-            {/* Map Section */}
+            {/* Real Map Section */}
             <div className="bg-white rounded-3xl shadow-lg overflow-hidden mb-6">
-              <div className="map-container map-grid h-80 relative">
-                {/* Map content */}
-                <div className="absolute inset-0 flex items-center justify-center">
-                  <div className="relative w-full h-full">
-                    {/* Pickup marker */}
-                    <div className="absolute animate-pulse-green" style={{ left: '20%', top: '30%' }}>
-                      <div className="w-8 h-8 bg-[#CDDC39] rounded-full flex items-center justify-center shadow-lg">
-                        <MapPin className="w-5 h-5 text-black" />
-                      </div>
-                      {pickup && (
-                        <div className="absolute top-10 left-1/2 -translate-x-1/2 bg-black text-white px-3 py-1 rounded-lg text-xs whitespace-nowrap">
-                          {pickup}
-                        </div>
-                      )}
+              <div className="h-96 relative">
+                <MapContainer
+                  center={mapCenter}
+                  zoom={13}
+                  style={{ height: '100%', width: '100%' }}
+                  zoomControl={true}
+                >
+                  <TileLayer
+                    attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+                    url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+                  />
+                  <RecenterMap center={mapCenter} />
+                  
+                  {/* Pickup Marker */}
+                  {pickupCoords && (
+                    <Marker position={pickupCoords} icon={pickupIcon}>
+                      <Popup>
+                        <strong>Pickup</strong><br />
+                        {pickup}
+                      </Popup>
+                    </Marker>
+                  )}
+                  
+                  {/* Dropoff Marker */}
+                  {dropoffCoords && (
+                    <Marker position={dropoffCoords} icon={dropoffIcon}>
+                      <Popup>
+                        <strong>Drop-off</strong><br />
+                        {dropoff}
+                      </Popup>
+                    </Marker>
+                  )}
+                  
+                  {/* Route Line */}
+                  {pickupCoords && dropoffCoords && (
+                    <Polyline
+                      positions={[pickupCoords, dropoffCoords]}
+                      color="#CDDC39"
+                      weight={4}
+                      opacity={0.8}
+                      dashArray="10, 10"
+                    />
+                  )}
+                  
+                  {/* Animated Car */}
+                  {rideStatus === 'inProgress' && carPosition && (
+                    <Marker
+                      position={carPosition}
+                      icon={new L.DivIcon({
+                        className: 'car-marker',
+                        html: `<div style="width: 40px; height: 40px; background: black; border-radius: 8px; display: flex; align-items: center; justify-content: center; transform: rotate(45deg); box-shadow: 0 4px 8px rgba(0,0,0,0.3);">
+                          <svg width="24" height="24" viewBox="0 0 24 24" fill="white" style="transform: rotate(-45deg);">
+                            <path d="M18.92 6.01C18.72 5.42 18.16 5 17.5 5h-11c-.66 0-1.21.42-1.42 1.01L3 12v8c0 .55.45 1 1 1h1c.55 0 1-.45 1-1v-1h12v1c0 .55.45 1 1 1h1c.55 0 1-.45 1-1v-8l-2.08-5.99zM6.5 16c-.83 0-1.5-.67-1.5-1.5S5.67 13 6.5 13s1.5.67 1.5 1.5S7.33 16 6.5 16zm11 0c-.83 0-1.5-.67-1.5-1.5s.67-1.5 1.5-1.5 1.5.67 1.5 1.5-.67 1.5-1.5 1.5zM5 11l1.5-4.5h11L19 11H5z"/>
+                          </svg>
+                        </div>`,
+                        iconSize: [40, 40],
+                        iconAnchor: [20, 20]
+                      })}
+                    />
+                  )}
+                </MapContainer>
+                
+                {/* Searching Overlay */}
+                {rideStatus === 'searching' && (
+                  <div className="absolute inset-0 bg-black/50 flex items-center justify-center z-[1000] rounded-3xl">
+                    <div className="bg-white rounded-2xl p-8 text-center">
+                      <div className="w-16 h-16 border-4 border-[#CDDC39] border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
+                      <p className="text-xl font-bold">Finding your driver...</p>
                     </div>
-                    
-                    {/* Dropoff marker */}
-                    <div className="absolute" style={{ right: '20%', top: '60%' }}>
-                      <div className="w-8 h-8 bg-black rounded-full flex items-center justify-center shadow-lg">
-                        <MapPin className="w-5 h-5 text-white" />
-                      </div>
-                      {dropoff && (
-                        <div className="absolute top-10 left-1/2 -translate-x-1/2 bg-black text-white px-3 py-1 rounded-lg text-xs whitespace-nowrap">
-                          {dropoff}
-                        </div>
-                      )}
-                    </div>
-                    
-                    {/* Route line */}
-                    {pickup && dropoff && (
-                      <svg className="absolute inset-0 w-full h-full pointer-events-none">
-                        <line
-                          x1="20%"
-                          y1="30%"
-                          x2="80%"
-                          y2="60%"
-                          stroke="#CDDC39"
-                          strokeWidth="3"
-                          strokeDasharray="10,5"
-                        />
-                      </svg>
-                    )}
-                    
-                    {/* Status overlay */}
-                    {rideStatus === 'searching' && (
-                      <div className="absolute inset-0 bg-black/50 flex items-center justify-center">
-                        <div className="bg-white rounded-2xl p-8 text-center">
-                          <div className="w-16 h-16 border-4 border-[#CDDC39] border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
-                          <p className="text-xl font-bold">Finding your driver...</p>
-                        </div>
-                      </div>
-                    )}
                   </div>
-                </div>
+                )}
               </div>
             </div>
 
@@ -354,42 +558,96 @@ const RideSharingApp = () => {
                 <h2 className="text-2xl font-bold mb-6">Book a Ride</h2>
                 
                 <div className="space-y-4">
-                  <div>
+                  <div className="relative">
                     <label className="block text-sm font-semibold text-gray-700 mb-2">Pickup Location</label>
                     <div className="relative">
-                      <MapPin className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-[#CDDC39]" />
+                      <MapPin className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-[#CDDC39] z-10" />
                       <input
                         type="text"
                         value={pickup}
-                        onChange={(e) => setPickup(e.target.value)}
-                        placeholder="Enter pickup location"
-                        className="w-full pl-12 pr-4 py-4 border-2 border-gray-200 rounded-2xl focus:border-[#CDDC39] focus:outline-none transition-colors"
+                        onChange={(e) => {
+                          setPickup(e.target.value);
+                          searchAddress(e.target.value, true);
+                        }}
+                        onFocus={() => setShowPickupSuggestions(true)}
+                        placeholder="Search pickup location"
+                        className="w-full pl-12 pr-12 py-4 border-2 border-gray-200 rounded-2xl focus:border-[#CDDC39] focus:outline-none transition-colors"
                       />
+                      <button
+                        onClick={getCurrentLocation}
+                        className="absolute right-4 top-1/2 -translate-y-1/2 p-2 hover:bg-gray-100 rounded-lg transition-colors"
+                        title="Use current location"
+                      >
+                        <Locate className="w-5 h-5 text-[#CDDC39]" />
+                      </button>
                     </div>
+                    
+                    {/* Pickup Suggestions */}
+                    {showPickupSuggestions && pickupSuggestions.length > 0 && (
+                      <div className="absolute z-20 w-full mt-2 bg-white border border-gray-200 rounded-2xl shadow-lg max-h-60 overflow-y-auto">
+                        {pickupSuggestions.map((suggestion, idx) => (
+                          <div
+                            key={idx}
+                            onClick={() => selectPickupAddress(suggestion)}
+                            className="suggestion-item p-3 border-b border-gray-100 last:border-0"
+                          >
+                            <div className="flex items-start gap-2">
+                              <MapPin className="w-4 h-4 text-gray-400 mt-1 flex-shrink-0" />
+                              <span className="text-sm">{suggestion.display_name}</span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
                   
-                  <div>
+                  <div className="relative">
                     <label className="block text-sm font-semibold text-gray-700 mb-2">Drop-off Location</label>
                     <div className="relative">
-                      <Navigation className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-black" />
+                      <Navigation className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-black z-10" />
                       <input
                         type="text"
                         value={dropoff}
-                        onChange={(e) => setDropoff(e.target.value)}
-                        placeholder="Enter drop-off location"
+                        onChange={(e) => {
+                          setDropoff(e.target.value);
+                          searchAddress(e.target.value, false);
+                        }}
+                        onFocus={() => setShowDropoffSuggestions(true)}
+                        placeholder="Search drop-off location"
                         className="w-full pl-12 pr-4 py-4 border-2 border-gray-200 rounded-2xl focus:border-[#CDDC39] focus:outline-none transition-colors"
                       />
                     </div>
+                    
+                    {/* Dropoff Suggestions */}
+                    {showDropoffSuggestions && dropoffSuggestions.length > 0 && (
+                      <div className="absolute z-20 w-full mt-2 bg-white border border-gray-200 rounded-2xl shadow-lg max-h-60 overflow-y-auto">
+                        {dropoffSuggestions.map((suggestion, idx) => (
+                          <div
+                            key={idx}
+                            onClick={() => selectDropoffAddress(suggestion)}
+                            className="suggestion-item p-3 border-b border-gray-100 last:border-0"
+                          >
+                            <div className="flex items-start gap-2">
+                              <Navigation className="w-4 h-4 text-gray-400 mt-1 flex-shrink-0" />
+                              <span className="text-sm">{suggestion.display_name}</span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
                   
                   <div>
-                    <label className="block text-sm font-semibold text-gray-700 mb-2">Distance (km)</label>
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">
+                      Distance (km) {distance && <span className="text-[#CDDC39]">• Auto-calculated</span>}
+                    </label>
                     <input
                       type="number"
                       value={distance}
                       onChange={(e) => setDistance(e.target.value)}
-                      placeholder="Enter distance"
+                      placeholder="Distance will be auto-calculated"
                       className="w-full px-4 py-4 border-2 border-gray-200 rounded-2xl focus:border-[#CDDC39] focus:outline-none transition-colors"
+                      readOnly={pickupCoords && dropoffCoords}
                     />
                   </div>
                   
@@ -485,11 +743,20 @@ const RideSharingApp = () => {
                   </div>
                   <h2 className="text-2xl font-bold mb-2">Ride in Progress</h2>
                   <p className="text-gray-600">Enjoy your ride!</p>
+                  <div className="mt-4 bg-gray-50 rounded-2xl p-4">
+                    <div className="w-full bg-gray-200 rounded-full h-2">
+                      <div
+                        className="bg-[#CDDC39] h-2 rounded-full transition-all duration-300"
+                        style={{ width: `${carAnimationProgress}%` }}
+                      ></div>
+                    </div>
+                    <p className="text-sm text-gray-600 mt-2">{carAnimationProgress.toFixed(0)}% Complete</p>
+                  </div>
                 </div>
               </div>
             )}
 
-            {/* Trip Receipt */}
+            {/* Trip Receipt - FIXED: Now appears properly */}
             {rideStatus === 'completed' && currentRide && (
               <div className="bg-white rounded-3xl shadow-lg p-6 mb-6 animate-slide-up">
                 <div className="text-center mb-6">
@@ -504,11 +771,11 @@ const RideSharingApp = () => {
                   <div className="space-y-3">
                     <div className="flex justify-between">
                       <span className="text-gray-600">From</span>
-                      <span className="font-semibold">{currentRide.pickup}</span>
+                      <span className="font-semibold text-right max-w-xs truncate">{currentRide.pickup}</span>
                     </div>
                     <div className="flex justify-between">
                       <span className="text-gray-600">To</span>
-                      <span className="font-semibold">{currentRide.dropoff}</span>
+                      <span className="font-semibold text-right max-w-xs truncate">{currentRide.dropoff}</span>
                     </div>
                     <div className="flex justify-between">
                       <span className="text-gray-600">Distance</span>
@@ -547,17 +814,16 @@ const RideSharingApp = () => {
                   disabled={userRating === 0}
                   className="w-full py-4 bg-[#CDDC39] text-black font-bold rounded-2xl hover:bg-[#b8c534] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  Submit Rating
+                  Submit Rating & Book Another Ride
                 </button>
               </div>
             )}
           </div>
         )}
 
-        {/* DRIVER VIEW */}
+        {/* DRIVER VIEW - Same as before with fixes */}
         {currentRole === 'driver' && (
           <div className="animate-slide-up">
-            {/* Driver Header */}
             <div className="bg-white rounded-3xl shadow-lg p-6 mb-6">
               <div className="flex items-center justify-between mb-6">
                 <div className="flex items-center gap-4">
@@ -609,7 +875,6 @@ const RideSharingApp = () => {
               </div>
             </div>
 
-            {/* Vehicle Info */}
             <div className="bg-white rounded-3xl shadow-lg p-6 mb-6">
               <h3 className="font-bold mb-4">Vehicle Details</h3>
               <div className="space-y-2">
@@ -624,7 +889,6 @@ const RideSharingApp = () => {
               </div>
             </div>
 
-            {/* Incoming Requests */}
             {currentDriver.isOnline && pendingRides.length > 0 && (
               <div className="bg-white rounded-3xl shadow-lg p-6 mb-6 animate-slide-up">
                 <h3 className="font-bold text-xl mb-4">Incoming Ride Request</h3>
@@ -643,11 +907,11 @@ const RideSharingApp = () => {
                     <div className="space-y-2 mb-4">
                       <div className="flex items-center gap-2">
                         <MapPin className="w-5 h-5" />
-                        <span className="font-semibold">{ride.pickup}</span>
+                        <span className="font-semibold text-sm">{ride.pickup}</span>
                       </div>
                       <div className="flex items-center gap-2">
                         <Navigation className="w-5 h-5" />
-                        <span className="font-semibold">{ride.dropoff}</span>
+                        <span className="font-semibold text-sm">{ride.dropoff}</span>
                       </div>
                       <div className="flex items-center gap-2">
                         <DollarSign className="w-5 h-5" />
@@ -673,7 +937,6 @@ const RideSharingApp = () => {
               </div>
             )}
 
-            {/* Active Ride */}
             {currentDriver.currentRide && (() => {
               const ride = rides.find(r => r.id === currentDriver.currentRide);
               return ride && (
@@ -686,11 +949,11 @@ const RideSharingApp = () => {
                     <div className="space-y-3">
                       <div className="flex items-center gap-2">
                         <MapPin className="w-5 h-5 text-[#CDDC39]" />
-                        <span className="font-semibold">{ride.pickup}</span>
+                        <span className="font-semibold text-sm">{ride.pickup}</span>
                       </div>
                       <div className="flex items-center gap-2">
                         <Navigation className="w-5 h-5" />
-                        <span className="font-semibold">{ride.dropoff}</span>
+                        <span className="font-semibold text-sm">{ride.dropoff}</span>
                       </div>
                       <div className="flex items-center gap-2">
                         <DollarSign className="w-5 h-5" />
@@ -720,7 +983,6 @@ const RideSharingApp = () => {
               );
             })()}
 
-            {/* No rides message */}
             {currentDriver.isOnline && pendingRides.length === 0 && !currentDriver.currentRide && (
               <div className="bg-white rounded-3xl shadow-lg p-12 text-center">
                 <Search className="w-16 h-16 text-gray-300 mx-auto mb-4" />
@@ -741,10 +1003,9 @@ const RideSharingApp = () => {
           </div>
         )}
 
-        {/* ADMIN VIEW */}
+        {/* ADMIN VIEW - Same as before */}
         {currentRole === 'admin' && (
           <div className="animate-slide-up">
-            {/* Stats Cards */}
             <div className="grid md:grid-cols-3 gap-6 mb-6">
               <div className="bg-white rounded-3xl shadow-lg p-6">
                 <div className="flex items-center gap-3 mb-4">
@@ -780,7 +1041,6 @@ const RideSharingApp = () => {
               </div>
             </div>
 
-            {/* Live Rides */}
             <div className="bg-white rounded-3xl shadow-lg p-6 mb-6">
               <h3 className="font-bold text-xl mb-4">Live Rides</h3>
               {rides.filter(r => r.status !== 'completed').length > 0 ? (
@@ -799,7 +1059,7 @@ const RideSharingApp = () => {
                           <span className="text-sm text-gray-500">{ride.timestamp}</span>
                         </div>
                         <p className="font-semibold">{ride.riderName} → {ride.driverName}</p>
-                        <p className="text-sm text-gray-600">{ride.pickup} → {ride.dropoff}</p>
+                        <p className="text-sm text-gray-600 truncate">{ride.pickup} → {ride.dropoff}</p>
                       </div>
                       <div className="text-right">
                         <p className="font-bold text-xl">₹{ride.fare.toFixed(2)}</p>
@@ -816,7 +1076,6 @@ const RideSharingApp = () => {
               )}
             </div>
 
-            {/* Completed Rides */}
             <div className="bg-white rounded-3xl shadow-lg p-6">
               <h3 className="font-bold text-xl mb-4">Completed Rides</h3>
               {completedRides.length > 0 ? (
@@ -848,7 +1107,7 @@ const RideSharingApp = () => {
                         </div>
                         <div>
                           <p className="text-sm text-gray-600">Route</p>
-                          <p className="font-semibold">{ride.pickup} → {ride.dropoff}</p>
+                          <p className="font-semibold text-sm truncate">{ride.pickup} → {ride.dropoff}</p>
                         </div>
                         <div>
                           <p className="text-sm text-gray-600">Fare</p>
@@ -869,11 +1128,10 @@ const RideSharingApp = () => {
         )}
       </main>
 
-      {/* Footer */}
       <footer className="bg-black text-white py-8 mt-12">
         <div className="max-w-7xl mx-auto px-4 text-center">
-          <p className="font-semibold">Developed by <span className="text-[#CDDC39]">Aaradhya archie</span></p>
-          <p className="text-gray-400 text-sm mt-2">21CSC101T •  Object-Oriented Design & Programming</p>
+          <p className="font-semibold">Developed by <span className="text-[#CDDC39]">B.LALIT KISHORE</span></p>
+          <p className="text-gray-400 text-sm mt-2">21CSC101T • C++ Object-Oriented Design & Programming</p>
         </div>
       </footer>
     </div>
