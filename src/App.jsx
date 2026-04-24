@@ -431,7 +431,7 @@ const RideSharingApp = () => {
               </div>
               <div>
                 <h1 className="text-xl font-bold text-black">RideShare</h1>
-                <p className="text-xs text-gray-500">By Lalit Kishore</p>
+                <p className="text-xs text-gray-500">By Aaradhya Archie</p>
               </div>
             </div>
             
@@ -1130,7 +1130,7 @@ const RideSharingApp = () => {
 
       <footer className="bg-black text-white py-8 mt-12">
         <div className="max-w-7xl mx-auto px-4 text-center">
-          <p className="font-semibold">Developed by <span className="text-[#CDDC39]">Lalit Kishore</span></p>
+          <p className="font-semibold">Developed by <span className="text-[#CDDC39]">Aaradhya Archie</span></p>
           <p className="text-gray-400 text-sm mt-2">21CSC101T • Object-Oriented Design & Programming</p>
         </div>
       </footer>
